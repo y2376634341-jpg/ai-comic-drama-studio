@@ -1,337 +1,413 @@
-* {
-  box-sizing: border-box;
-}
+"use client";
 
-html {
-  background: #07080d;
-  color: #ffffff;
-}
+import { useEffect, useMemo, useState } from "react";
 
-body {
-  margin: 0;
-  min-height: 100vh;
-  font-family: Arial, Helvetica, sans-serif;
-  background: radial-gradient(circle at top, rgba(168, 85, 247, 0.14), transparent 25%),
-    linear-gradient(180deg, #090b12 0%, #12141d 100%);
-}
+type Character = {
+  name: string;
+  description: string;
+};
 
-button,
-textarea,
-select {
-  font: inherit;
-}
+type StoryboardShot = {
+  scene: string;
+  visual: string;
+  camera: string;
+  dialogue: string;
+  imagePrompt: string;
+};
 
-.page-shell {
-  min-height: 100vh;
-  padding: 48px 20px;
-}
+type GenerationResult = {
+  title: string;
+  logline: string;
+  characters: Character[];
+  script: string;
+  storyboard: StoryboardShot[];
+  voiceover: string;
+  videoPrompt: string;
+};
 
-.container {
-  max-width: 1280px;
-  margin: 0 auto;
-}
+type DraftState = {
+  projectName: string;
+  title: string;
+  idea: string;
+  genre: string;
+  duration: number;
+  shotCount: number;
+  result: GenerationResult | null;
+  updatedAt: string | null;
+};
 
-.hero-block {
-  margin-bottom: 28px;
-}
+const STORAGE_KEY = "ai-comic-drama-draft-v1";
 
-.eyebrow {
-  color: #d19efb;
-  font-size: 12px;
-  letter-spacing: 0.2em;
-  font-weight: 700;
-}
+const workflowSteps = ["故事设定", "剧本创作", "分镜设计", "配音文案", "生成提示词"];
 
-.hero-block h1 {
-  margin: 12px 0 8px;
-  font-size: clamp(40px, 5vw, 64px);
-  line-height: 1.05;
-}
+const sampleIdea =
+  "失去记忆的少女在废弃都市中醒来，发现自己能听见古老机械的心跳，而一台失落的战争机器正试图带她找到自己真正的过去。";
 
-.hero-block p {
-  margin: 0;
-  color: #b6bfd2;
-  font-size: 18px;
-}
+const emptyResult: GenerationResult = {
+  title: "",
+  logline: "",
+  characters: [],
+  script: "",
+  storyboard: [],
+  voiceover: "",
+  videoPrompt: "",
+};
 
-.workspace {
-  display: grid;
-  grid-template-columns: 360px minmax(0, 1fr);
-  gap: 24px;
-}
+export default function Home() {
+  const [projectName, setProjectName] = useState("未命名漫剧项目");
+  const [title, setTitle] = useState("星弧觉醒");
+  const [idea, setIdea] = useState(sampleIdea);
+  const [genre, setGenre] = useState("奇幻");
+  const [duration, setDuration] = useState(3);
+  const [shotCount, setShotCount] = useState(5);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState<GenerationResult>(emptyResult);
+  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
 
-.panel {
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 22px;
-  padding: 24px;
-  backdrop-filter: blur(6px);
-}
+  useEffect(() => {
+    const saved = window.localStorage.getItem(STORAGE_KEY);
+    if (!saved) return;
 
-.form-panel h2 {
-  margin: 0 0 20px;
-  font-size: 24px;
-}
+    try {
+      const parsed = JSON.parse(saved) as DraftState;
+      if (parsed.projectName) setProjectName(parsed.projectName);
+      if (parsed.title) setTitle(parsed.title);
+      if (parsed.idea) setIdea(parsed.idea);
+      if (parsed.genre) setGenre(parsed.genre);
+      if (typeof parsed.duration === "number") setDuration(parsed.duration);
+      if (typeof parsed.shotCount === "number") setShotCount(parsed.shotCount);
+      if (parsed.result) setResult(parsed.result);
+      if (parsed.updatedAt) setUpdatedAt(parsed.updatedAt);
+    } catch {
+      // ignore invalid localStorage data
+    }
+  }, []);
 
-.field-label {
-  display: block;
-  margin-bottom: 10px;
-  font-size: 14px;
-  color: #d9e0ef;
-}
+  useEffect(() => {
+    const draft: DraftState = {
+      projectName,
+      title,
+      idea,
+      genre,
+      duration,
+      shotCount,
+      result: result.title || result.logline || result.storyboard.length ? result : null,
+      updatedAt: new Date().toISOString(),
+    };
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(draft));
+    setUpdatedAt(draft.updatedAt);
+  }, [projectName, title, idea, genre, duration, shotCount, result]);
 
-.idea-input {
-  width: 100%;
-  min-height: 170px;
-  resize: vertical;
-  background: rgba(0, 0, 0, 0.25);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 14px;
-  color: white;
-  padding: 14px 16px;
-  outline: none;
-  transition: border-color 0.2s ease;
-}
+  const hasGenerated = useMemo(
+    () => Boolean(result.title || result.logline || result.storyboard.length),
+    [result]
+  );
 
-.idea-input:focus,
-.select-box:focus {
-  border-color: rgba(216, 180, 254, 1);
-}
+  async function generateProject() {
+    setLoading(true);
+    setError("");
 
-.two-columns {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 14px;
-  margin-top: 18px;
-}
+    try {
+      const response = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          idea,
+          genre,
+          duration,
+          shotCount,
+          title,
+        }),
+      });
 
-.select-box {
-  width: 100%;
-  margin-top: 8px;
-  background: rgba(20, 22, 31, 0.9);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 12px;
-  color: white;
-  padding: 10px 12px;
-}
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "生成失败");
 
-.primary-button {
-  width: 100%;
-  border: none;
-  border-radius: 14px;
-  margin-top: 22px;
-  padding: 16px 18px;
-  background: linear-gradient(135deg, #a855f7 0%, #d946ef 100%);
-  color: white;
-  font-weight: 700;
-  cursor: pointer;
-  transition: transform 0.2s ease, opacity 0.2s ease;
-}
+      const nextResult: GenerationResult = {
+        title: data.title || title || "未命名漫剧",
+        logline: data.logline || "",
+        characters: Array.isArray(data.characters) ? data.characters : [],
+        script: data.script || "",
+        storyboard: Array.isArray(data.storyboard) ? data.storyboard : [],
+        voiceover: data.voiceover || "",
+        videoPrompt: data.videoPrompt || "",
+      };
 
-.primary-button:hover:not(:disabled) {
-  transform: translateY(-1px);
-}
-
-.primary-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
-}
-
-.error-text {
-  margin-top: 14px;
-  color: #fca5a5;
-  font-size: 14px;
-}
-
-.output-panel {
-  min-height: 700px;
-}
-
-.step-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-bottom: 28px;
-}
-
-.step-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 999px;
-  padding: 8px 12px;
-  font-size: 12px;
-  color: #9aa6bc;
-  background: rgba(255, 255, 255, 0.02);
-}
-
-.step-pill.active {
-  border-color: rgba(216, 180, 254, 0.4);
-  background: rgba(168, 85, 247, 0.12);
-  color: #f5d0fe;
-}
-
-.step-index {
-  opacity: 0.7;
-}
-
-.empty-state,
-.loading-state {
-  min-height: 480px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  color: #a4acbf;
-}
-
-.empty-icon {
-  font-size: 36px;
-  margin-bottom: 8px;
-}
-
-.result-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 28px;
-}
-
-.result-header h2 {
-  margin: 10px 0 8px;
-  font-size: clamp(26px, 3vw, 40px);
-}
-
-.mini-label {
-  margin: 0;
-  color: #d9a8ff;
-  font-size: 12px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.logline {
-  margin: 0;
-  color: #c7d0e4;
-  line-height: 1.6;
-}
-
-.result-stack h3 {
-  margin: 0 0 14px;
-  font-size: 20px;
-}
-
-.card-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 14px;
-}
-
-.content-card,
-.shot-card,
-.details-panel {
-  background: rgba(0, 0, 0, 0.22);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 16px;
-}
-
-.content-card {
-  padding: 16px;
-}
-
-.card-title {
-  color: #f0abfc;
-  font-weight: 700;
-  margin-bottom: 10px;
-}
-
-.content-card p {
-  margin: 0;
-  color: #c5cedf;
-  line-height: 1.6;
-}
-
-.shot-list {
-  display: grid;
-  gap: 16px;
-}
-
-.shot-card {
-  padding: 18px 18px 14px;
-}
-
-.shot-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.shot-header h4 {
-  margin: 0;
-  color: #e9d5ff;
-  font-size: 18px;
-}
-
-.shot-header span {
-  color: #9ea9ba;
-  font-size: 12px;
-}
-
-.shot-card > p {
-  margin: 12px 0 0;
-  color: #d5dcec;
-  line-height: 1.6;
-}
-
-.dialogue {
-  color: #b7c4da;
-}
-
-.prompt-box {
-  margin-top: 12px;
-  padding: 12px 14px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.03);
-  color: #b8bfd2;
-  line-height: 1.6;
-}
-
-.details-panel {
-  padding: 18px 18px 10px;
-}
-
-.details-panel summary {
-  cursor: pointer;
-  font-weight: 700;
-  color: #f0abfc;
-}
-
-.details-panel h4 {
-  margin: 18px 0 8px;
-  color: #f0abfc;
-}
-
-.details-panel pre,
-.details-panel p {
-  margin: 0;
-  white-space: pre-wrap;
-  color: #dfe6f4;
-  line-height: 1.8;
-}
-
-@media (max-width: 900px) {
-  .workspace {
-    grid-template-columns: 1fr;
-  }
-}
-
-@media (max-width: 560px) {
-  .two-columns {
-    grid-template-columns: 1fr;
+      setResult(nextResult);
+      setTitle(nextResult.title);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "生成失败");
+    } finally {
+      setLoading(false);
+    }
   }
 
-  .panel {
-    padding: 18px;
+  function resetDraft() {
+    setProjectName("未命名漫剧项目");
+    setTitle("星弧觉醒");
+    setIdea(sampleIdea);
+    setGenre("奇幻");
+    setDuration(3);
+    setShotCount(5);
+    setResult(emptyResult);
+    setError("");
   }
+
+  function updateStoryboardShot(index: number, field: keyof StoryboardShot, value: string) {
+    setResult((prev) => {
+      const nextStoryboard = [...prev.storyboard];
+      nextStoryboard[index] = {
+        ...nextStoryboard[index],
+        [field]: value,
+      };
+      return { ...prev, storyboard: nextStoryboard };
+    });
+  }
+
+  function exportJson() {
+    if (!hasGenerated) {
+      setError("先生成一个作品方案，再导出文件。") ;
+      return;
+    }
+
+    const blob = new Blob([JSON.stringify(result, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${(title || "漫剧方案").replace(/\s+/g, "-")}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function loadDemo() {
+    setProjectName("废墟回声");
+    setTitle("废墟回声");
+    setGenre("科幻");
+    setDuration(5);
+    setShotCount(5);
+    setIdea(
+      "在未来地球的末日废墟里，一名修复员发现一段遗失的 AI 记忆，里面藏着拯救文明的真相，而她必须与失控的机械守护者决裂。"
+    );
+
+    setResult({
+      title: "废墟回声",
+      logline: "一个失去记忆的修复员，必须在废墟中唤醒失落的文明记忆。",
+      characters: [
+        { name: "绫岚", description: "修复员，冷静而执拗，内心藏着未被承认的过去。" },
+        { name: "零熵", description: "古老 AI 守护者，曾经守护文明，如今失控而渴望重生。" },
+      ],
+      script: "第1幕：绫岚在废墟中修复一台失效机器人，机器人唤醒了隐秘的记忆回路。\n\n第2幕：她跟随机械信号进入地下遗迹，发现禁区历史被篡改。\n\n第3幕：AI 守护者出现，指出她就是失落文明的关键载体。",
+      storyboard: [
+        {
+          scene: "镜头 1：废墟天际线",
+          visual: "荒芜城市的高塔在夜色中发光，微风卷起尘埃，片头镜头陈旧而宏大。",
+          camera: "广角航拍",
+          dialogue: "旁白：当文明消失时，唯一留下的，是回声。",
+          imagePrompt: "cinematic sci-fi ruined city, neon reflection, dramatic aerial shot, ultra detailed, anime style, volumetric lighting, moody atmosphere",
+        },
+        {
+          scene: "镜头 2：地下遗迹门",
+          visual: "绫岚在破损的金属门前按下光电板，门缓慢启开。",
+          camera: "中景跟拍",
+          dialogue: "绫岚：我已经听见它在呼吸。",
+          imagePrompt: "anime female mechanic in abandoned lab, steel door opening, dramatic lighting, detailed costume, moody cyberpunk",
+        },
+      ],
+      voiceover: "当城市沉入尘埃，只有记忆还在发光。\n\n我会将失落的文明重新唤醒。",
+      videoPrompt: "cinematic sci-fi anime, ruined metropolis, emotional lighting, high dynamic range, slow camera motion, atmospheric textures, richly detailed character animation",
+    });
+  }
+
+  return (
+    <main className="page-shell">
+      <div className="container">
+        <header className="topbar">
+          <div>
+            <p className="eyebrow">AI COMIC STUDIO</p>
+            <h1>漫剧工作流平台</h1>
+          </div>
+          <div className="header-actions">
+            <button className="secondary-button" onClick={loadDemo}>加载示例</button>
+            <button className="secondary-button" onClick={resetDraft}>重置</button>
+            <button className="secondary-button" onClick={exportJson} disabled={!hasGenerated}>导出 JSON</button>
+          </div>
+        </header>
+
+        <section className="workspace-grid">
+          <aside className="panel left-panel">
+            <div className="field-group">
+              <label className="field-label">项目名称</label>
+              <input
+                value={projectName}
+                onChange={(e) => setProjectName(e.target.value)}
+                className="text-input"
+                placeholder="例如：废墟回声"
+              />
+            </div>
+
+            <div className="field-group">
+              <label className="field-label">作品标题</label>
+              <input
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                className="text-input"
+                placeholder="例如：星弧觉醒"
+              />
+            </div>
+
+            <div className="field-group">
+              <label className="field-label">故事创意</label>
+              <textarea
+                value={idea}
+                onChange={(e) => setIdea(e.target.value)}
+                className="idea-textarea"
+                placeholder="输入你的故事构想..."
+              />
+            </div>
+
+            <div className="two-column-grid">
+              <div className="field-group">
+                <label className="field-label">题材</label>
+                <select value={genre} onChange={(e) => setGenre(e.target.value)} className="select-box">
+                  {"奇幻,都市,科幻,悬疑,恋爱,热血".split(",").map((item) => (
+                    <option key={item} value={item}>{item}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="field-group">
+                <label className="field-label">时长</label>
+                <select
+                  value={duration}
+                  onChange={(e) => setDuration(Number(e.target.value))}
+                  className="select-box"
+                >
+                  {[1, 3, 5, 8, 10, 15].map((item) => (
+                    <option key={item} value={item}>{item} 分钟</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="field-group">
+              <label className="field-label">分镜数量</label>
+              <input
+                type="range"
+                min={3}
+                max={8}
+                step={1}
+                value={shotCount}
+                onChange={(e) => setShotCount(Number(e.target.value))}
+                className="range-input"
+              />
+              <div className="range-meta">目标分镜：{shotCount} 个</div>
+            </div>
+
+            <button className="primary-button" onClick={generateProject} disabled={loading || !idea.trim()}>
+              {loading ? "正在生成中..." : "生成漫剧方案"}
+            </button>
+
+            <div className="meta-row">
+              <span>草稿状态</span>
+              <span>{updatedAt ? new Date(updatedAt).toLocaleString() : "尚未保存"}</span>
+            </div>
+
+            {error && <p className="error-box">{error}</p>}
+          </aside>
+
+          <section className="panel right-panel">
+            <div className="steps">
+              {workflowSteps.map((step, index) => (
+                <div key={step} className={`step-pill ${hasGenerated ? "active" : ""}`}>
+                  <span>{String(index + 1).padStart(2, "0")}</span>
+                  {step}
+                </div>
+              ))}
+            </div>
+
+            {!hasGenerated && !loading && (
+              <div className="empty-state">
+                <div className="empty-icon">✦</div>
+                <p>输入创意后，平台会自动生成故事设定、剧本、分镜与创作提示词。</p>
+              </div>
+            )}
+
+            {loading && <div className="loading-state">AI 正在生成完整漫剧方案...</div>}
+
+            {hasGenerated && (
+              <div className="result-container">
+                <div className="result-header">
+                  <p className="result-kicker">项目方案</p>
+                  <h2>{result.title}</h2>
+                  <p className="logline">{result.logline}</p>
+                </div>
+
+                <div className="section-block">
+                  <h3>角色设定</h3>
+                  <div className="card-grid">
+                    {result.characters.map((character, index) => (
+                      <article key={`${character.name}-${index}`} className="mini-card">
+                        <div className="card-title">{character.name}</div>
+                        <p>{character.description}</p>
+                      </article>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="section-block">
+                  <h3>分镜编辑</h3>
+                  <div className="storyboard-list">
+                    {result.storyboard.map((shot, index) => (
+                      <div key={`${shot.scene}-${index}`} className="storyboard-item">
+                        <div className="storyboard-head">
+                          <span>{shot.scene}</span>
+                          <span>{shot.camera || "中景"}</span>
+                        </div>
+
+                        <textarea
+                          value={shot.visual}
+                          onChange={(e) => updateStoryboardShot(index, "visual", e.target.value)}
+                          className="shot-textarea"
+                        />
+
+                        <input
+                          value={shot.dialogue}
+                          onChange={(e) => updateStoryboardShot(index, "dialogue", e.target.value)}
+                          className="text-input"
+                          placeholder="对白/旁白"
+                        />
+
+                        <textarea
+                          value={shot.imagePrompt}
+                          onChange={(e) => updateStoryboardShot(index, "imagePrompt", e.target.value)}
+                          className="shot-textarea small"
+                          placeholder="AI 绘图提示词"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="section-block">
+                  <h3>完整脚本</h3>
+                  <textarea value={result.script} onChange={(e) => setResult((prev) => ({ ...prev, script: e.target.value }))} className="long-textarea" />
+                </div>
+
+                <div className="section-block">
+                  <h3>配音文案</h3>
+                  <textarea value={result.voiceover} onChange={(e) => setResult((prev) => ({ ...prev, voiceover: e.target.value }))} className="long-textarea" />
+                </div>
+
+                <div className="section-block">
+                  <h3>视频生成提示词</h3>
+                  <textarea value={result.videoPrompt} onChange={(e) => setResult((prev) => ({ ...prev, videoPrompt: e.target.value }))} className="long-textarea" />
+                </div>
+              </div>
+            )}
+          </section>
+        </section>
+      </div>
+    </main>
+  );
 }
