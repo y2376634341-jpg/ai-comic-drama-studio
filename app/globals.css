@@ -2,11 +2,6 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-type Character = {
-  name: string;
-  description: string;
-};
-
 type StoryboardShot = {
   scene: string;
   visual: string;
@@ -18,30 +13,27 @@ type StoryboardShot = {
 type GenerationResult = {
   title: string;
   logline: string;
-  characters: Character[];
+  characters: { name: string; description: string }[];
   script: string;
   storyboard: StoryboardShot[];
   voiceover: string;
   videoPrompt: string;
 };
 
-type DraftState = {
-  projectName: string;
+type ProjectRecord = {
+  id: string;
+  name: string;
   title: string;
   idea: string;
   genre: string;
   duration: number;
   shotCount: number;
-  result: GenerationResult | null;
-  updatedAt: string | null;
+  result: GenerationResult;
+  createdAt: string;
+  updatedAt: string;
 };
 
-const STORAGE_KEY = "ai-comic-drama-draft-v1";
-
 const workflowSteps = ["故事设定", "剧本创作", "分镜设计", "配音文案", "生成提示词"];
-
-const sampleIdea =
-  "失去记忆的少女在废弃都市中醒来，发现自己能听见古老机械的心跳，而一台失落的战争机器正试图带她找到自己真正的过去。";
 
 const emptyResult: GenerationResult = {
   title: "",
@@ -53,58 +45,105 @@ const emptyResult: GenerationResult = {
   videoPrompt: "",
 };
 
+const seedIdea =
+  "失去记忆的少女在废弃都市中醒来，发现自己能听见古老机械的心跳，而一台失落的战争机器正试图带她找到自己真正的过去。";
+
 export default function Home() {
-  const [projectName, setProjectName] = useState("未命名漫剧项目");
-  const [title, setTitle] = useState("星弧觉醒");
-  const [idea, setIdea] = useState(sampleIdea);
-  const [genre, setGenre] = useState("奇幻");
-  const [duration, setDuration] = useState(3);
-  const [shotCount, setShotCount] = useState(5);
+  const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [result, setResult] = useState<GenerationResult>(emptyResult);
-  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
 
-  useEffect(() => {
-    const saved = window.localStorage.getItem(STORAGE_KEY);
-    if (!saved) return;
-
-    try {
-      const parsed = JSON.parse(saved) as DraftState;
-      if (parsed.projectName) setProjectName(parsed.projectName);
-      if (parsed.title) setTitle(parsed.title);
-      if (parsed.idea) setIdea(parsed.idea);
-      if (parsed.genre) setGenre(parsed.genre);
-      if (typeof parsed.duration === "number") setDuration(parsed.duration);
-      if (typeof parsed.shotCount === "number") setShotCount(parsed.shotCount);
-      if (parsed.result) setResult(parsed.result);
-      if (parsed.updatedAt) setUpdatedAt(parsed.updatedAt);
-    } catch {
-      // ignore invalid localStorage data
-    }
-  }, []);
-
-  useEffect(() => {
-    const draft: DraftState = {
-      projectName,
-      title,
-      idea,
-      genre,
-      duration,
-      shotCount,
-      result: result.title || result.logline || result.storyboard.length ? result : null,
-      updatedAt: new Date().toISOString(),
-    };
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(draft));
-    setUpdatedAt(draft.updatedAt);
-  }, [projectName, title, idea, genre, duration, shotCount, result]);
-
-  const hasGenerated = useMemo(
-    () => Boolean(result.title || result.logline || result.storyboard.length),
-    [result]
+  const selectedProject = useMemo(
+    () => projects.find((project) => project.id === selectedId) || null,
+    [projects, selectedId]
   );
 
+  async function loadProjects() {
+    try {
+      const response = await fetch("/api/projects");
+      const data = await response.json();
+      setProjects(Array.isArray(data) ? data : []);
+      if (Array.isArray(data) && data.length > 0) {
+        setSelectedId(data[0].id);
+      }
+    } catch {
+      setError("无法加载项目列表");
+    }
+  }
+
+  useEffect(() => {
+    loadProjects();
+  }, []);
+
+  async function createProject() {
+    const payload = {
+      name: "未命名漫剧项目",
+      title: "新漫剧项目",
+      idea: seedIdea,
+      genre: "奇幻",
+      duration: 3,
+      shotCount: 5,
+      result: emptyResult,
+    };
+
+    const response = await fetch("/api/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    const project = await response.json();
+    if (!response.ok) {
+      throw new Error(project.error || "创建项目失败");
+    }
+
+    setProjects((prev) => [project, ...prev]);
+    setSelectedId(project.id);
+  }
+
+  async function saveProject() {
+    if (!selectedProject) return;
+
+    setSaving(true);
+    try {
+      const response = await fetch(`/api/projects/${selectedProject.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(selectedProject),
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "保存失败");
+
+      setProjects((prev) =>
+        prev.map((project) => (project.id === data.id ? data : project))
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteSelected() {
+    if (!selectedProject) return;
+
+    const response = await fetch(`/api/projects/${selectedProject.id}`, {
+      method: "DELETE",
+    });
+
+    if (response.ok) {
+      const nextProjects = projects.filter((project) => project.id !== selectedProject.id);
+      setProjects(nextProjects);
+      setSelectedId(nextProjects[0]?.id || null);
+      setError("");
+    }
+  }
+
   async function generateProject() {
+    if (!selectedProject) return;
     setLoading(true);
     setError("");
 
@@ -113,29 +152,33 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          idea,
-          genre,
-          duration,
-          shotCount,
-          title,
+          idea: selectedProject.idea,
+          genre: selectedProject.genre,
+          duration: selectedProject.duration,
+          shotCount: selectedProject.shotCount,
         }),
       });
 
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "生成失败");
 
-      const nextResult: GenerationResult = {
-        title: data.title || title || "未命名漫剧",
-        logline: data.logline || "",
-        characters: Array.isArray(data.characters) ? data.characters : [],
-        script: data.script || "",
-        storyboard: Array.isArray(data.storyboard) ? data.storyboard : [],
-        voiceover: data.voiceover || "",
-        videoPrompt: data.videoPrompt || "",
+      const nextProject: ProjectRecord = {
+        ...selectedProject,
+        title: data.title || selectedProject.title,
+        result: {
+          title: data.title || selectedProject.title,
+          logline: data.logline || "",
+          characters: Array.isArray(data.characters) ? data.characters : [],
+          script: data.script || "",
+          storyboard: Array.isArray(data.storyboard) ? data.storyboard : [],
+          voiceover: data.voiceover || "",
+          videoPrompt: data.videoPrompt || "",
+        },
+        updatedAt: new Date().toISOString(),
       };
 
-      setResult(nextResult);
-      setTitle(nextResult.title);
+      setProjects((prev) => prev.map((project) => (project.id === nextProject.id ? nextProject : project)));
+      setSelectedId(nextProject.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "生成失败");
     } finally {
@@ -143,80 +186,69 @@ export default function Home() {
     }
   }
 
-  function resetDraft() {
-    setProjectName("未命名漫剧项目");
-    setTitle("星弧觉醒");
-    setIdea(sampleIdea);
-    setGenre("奇幻");
-    setDuration(3);
-    setShotCount(5);
-    setResult(emptyResult);
-    setError("");
+  function updateCurrentProject<K extends keyof ProjectRecord>(key: K, value: ProjectRecord[K]) {
+    if (!selectedProject) return;
+    setProjects((prev) =>
+      prev.map((project) =>
+        project.id === selectedProject.id ? { ...project, [key]: value, updatedAt: new Date().toISOString() } : project
+      )
+    );
+  }
+
+  function updateResultField(field: keyof GenerationResult, value: string | { name: string; description: string }[]) {
+    if (!selectedProject) return;
+    setProjects((prev) =>
+      prev.map((project) => {
+        if (project.id !== selectedProject.id) return project;
+        return {
+          ...project,
+          result: {
+            ...project.result,
+            [field]: value,
+          },
+          updatedAt: new Date().toISOString(),
+        };
+      })
+    );
   }
 
   function updateStoryboardShot(index: number, field: keyof StoryboardShot, value: string) {
-    setResult((prev) => {
-      const nextStoryboard = [...prev.storyboard];
-      nextStoryboard[index] = {
-        ...nextStoryboard[index],
-        [field]: value,
-      };
-      return { ...prev, storyboard: nextStoryboard };
-    });
+    if (!selectedProject) return;
+    setProjects((prev) =>
+      prev.map((project) => {
+        if (project.id !== selectedProject.id) return project;
+        const nextStoryboard = [...project.result.storyboard];
+        nextStoryboard[index] = { ...nextStoryboard[index], [field]: value };
+        return {
+          ...project,
+          result: { ...project.result, storyboard: nextStoryboard },
+          updatedAt: new Date().toISOString(),
+        };
+      })
+    );
   }
 
-  function exportJson() {
-    if (!hasGenerated) {
-      setError("先生成一个作品方案，再导出文件。") ;
-      return;
-    }
-
-    const blob = new Blob([JSON.stringify(result, null, 2)], { type: "application/json" });
+  function exportProject() {
+    if (!selectedProject) return;
+    const blob = new Blob([JSON.stringify(selectedProject, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `${(title || "漫剧方案").replace(/\s+/g, "-")}.json`;
-    anchor.click();
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${(selectedProject.title || selectedProject.name).replace(/\s+/g, "-")}.json`;
+    link.click();
     URL.revokeObjectURL(url);
   }
 
-  function loadDemo() {
-    setProjectName("废墟回声");
-    setTitle("废墟回声");
-    setGenre("科幻");
-    setDuration(5);
-    setShotCount(5);
-    setIdea(
-      "在未来地球的末日废墟里，一名修复员发现一段遗失的 AI 记忆，里面藏着拯救文明的真相，而她必须与失控的机械守护者决裂。"
+  if (!selectedProject) {
+    return (
+      <main className="page-shell">
+        <div className="empty-landing">
+          <h1>漫剧工作流平台</h1>
+          <p>创建第一个项目，开始你的 AI 制作流水线。</p>
+          <button className="primary-button" onClick={createProject}>新建项目</button>
+        </div>
+      </main>
     );
-
-    setResult({
-      title: "废墟回声",
-      logline: "一个失去记忆的修复员，必须在废墟中唤醒失落的文明记忆。",
-      characters: [
-        { name: "绫岚", description: "修复员，冷静而执拗，内心藏着未被承认的过去。" },
-        { name: "零熵", description: "古老 AI 守护者，曾经守护文明，如今失控而渴望重生。" },
-      ],
-      script: "第1幕：绫岚在废墟中修复一台失效机器人，机器人唤醒了隐秘的记忆回路。\n\n第2幕：她跟随机械信号进入地下遗迹，发现禁区历史被篡改。\n\n第3幕：AI 守护者出现，指出她就是失落文明的关键载体。",
-      storyboard: [
-        {
-          scene: "镜头 1：废墟天际线",
-          visual: "荒芜城市的高塔在夜色中发光，微风卷起尘埃，片头镜头陈旧而宏大。",
-          camera: "广角航拍",
-          dialogue: "旁白：当文明消失时，唯一留下的，是回声。",
-          imagePrompt: "cinematic sci-fi ruined city, neon reflection, dramatic aerial shot, ultra detailed, anime style, volumetric lighting, moody atmosphere",
-        },
-        {
-          scene: "镜头 2：地下遗迹门",
-          visual: "绫岚在破损的金属门前按下光电板，门缓慢启开。",
-          camera: "中景跟拍",
-          dialogue: "绫岚：我已经听见它在呼吸。",
-          imagePrompt: "anime female mechanic in abandoned lab, steel door opening, dramatic lighting, detailed costume, moody cyberpunk",
-        },
-      ],
-      voiceover: "当城市沉入尘埃，只有记忆还在发光。\n\n我会将失落的文明重新唤醒。",
-      videoPrompt: "cinematic sci-fi anime, ruined metropolis, emotional lighting, high dynamic range, slow camera motion, atmospheric textures, richly detailed character animation",
-    });
   }
 
   return (
@@ -228,183 +260,220 @@ export default function Home() {
             <h1>漫剧工作流平台</h1>
           </div>
           <div className="header-actions">
-            <button className="secondary-button" onClick={loadDemo}>加载示例</button>
-            <button className="secondary-button" onClick={resetDraft}>重置</button>
-            <button className="secondary-button" onClick={exportJson} disabled={!hasGenerated}>导出 JSON</button>
+            <button className="secondary-button" onClick={createProject}>新项目</button>
+            <button className="secondary-button" onClick={saveProject} disabled={saving}>保存</button>
+            <button className="secondary-button" onClick={exportProject}>导出 JSON</button>
+            <button className="secondary-button danger" onClick={deleteSelected}>删除</button>
           </div>
         </header>
 
-        <section className="workspace-grid">
-          <aside className="panel left-panel">
-            <div className="field-group">
-              <label className="field-label">项目名称</label>
-              <input
-                value={projectName}
-                onChange={(e) => setProjectName(e.target.value)}
-                className="text-input"
-                placeholder="例如：废墟回声"
-              />
+        <section className="project-layout">
+          <aside className="panel sidebar-panel">
+            <div className="sidebar-header">
+              <h2>项目列表</h2>
+              <button className="mini-button" onClick={createProject}>＋</button>
             </div>
 
-            <div className="field-group">
-              <label className="field-label">作品标题</label>
-              <input
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                className="text-input"
-                placeholder="例如：星弧觉醒"
-              />
-            </div>
-
-            <div className="field-group">
-              <label className="field-label">故事创意</label>
-              <textarea
-                value={idea}
-                onChange={(e) => setIdea(e.target.value)}
-                className="idea-textarea"
-                placeholder="输入你的故事构想..."
-              />
-            </div>
-
-            <div className="two-column-grid">
-              <div className="field-group">
-                <label className="field-label">题材</label>
-                <select value={genre} onChange={(e) => setGenre(e.target.value)} className="select-box">
-                  {"奇幻,都市,科幻,悬疑,恋爱,热血".split(",").map((item) => (
-                    <option key={item} value={item}>{item}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="field-group">
-                <label className="field-label">时长</label>
-                <select
-                  value={duration}
-                  onChange={(e) => setDuration(Number(e.target.value))}
-                  className="select-box"
+            <div className="project-list">
+              {projects.map((project) => (
+                <button
+                  key={project.id}
+                  className={`project-item ${selectedProject.id === project.id ? "selected" : ""}`}
+                  onClick={() => setSelectedId(project.id)}
                 >
-                  {[1, 3, 5, 8, 10, 15].map((item) => (
-                    <option key={item} value={item}>{item} 分钟</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div className="field-group">
-              <label className="field-label">分镜数量</label>
-              <input
-                type="range"
-                min={3}
-                max={8}
-                step={1}
-                value={shotCount}
-                onChange={(e) => setShotCount(Number(e.target.value))}
-                className="range-input"
-              />
-              <div className="range-meta">目标分镜：{shotCount} 个</div>
-            </div>
-
-            <button className="primary-button" onClick={generateProject} disabled={loading || !idea.trim()}>
-              {loading ? "正在生成中..." : "生成漫剧方案"}
-            </button>
-
-            <div className="meta-row">
-              <span>草稿状态</span>
-              <span>{updatedAt ? new Date(updatedAt).toLocaleString() : "尚未保存"}</span>
-            </div>
-
-            {error && <p className="error-box">{error}</p>}
-          </aside>
-
-          <section className="panel right-panel">
-            <div className="steps">
-              {workflowSteps.map((step, index) => (
-                <div key={step} className={`step-pill ${hasGenerated ? "active" : ""}`}>
-                  <span>{String(index + 1).padStart(2, "0")}</span>
-                  {step}
-                </div>
+                  <strong>{project.name || project.title}</strong>
+                  <span>{project.updatedAt ? new Date(project.updatedAt).toLocaleDateString() : "新项目"}</span>
+                </button>
               ))}
             </div>
+          </aside>
 
-            {!hasGenerated && !loading && (
-              <div className="empty-state">
-                <div className="empty-icon">✦</div>
-                <p>输入创意后，平台会自动生成故事设定、剧本、分镜与创作提示词。</p>
-              </div>
-            )}
-
-            {loading && <div className="loading-state">AI 正在生成完整漫剧方案...</div>}
-
-            {hasGenerated && (
-              <div className="result-container">
-                <div className="result-header">
-                  <p className="result-kicker">项目方案</p>
-                  <h2>{result.title}</h2>
-                  <p className="logline">{result.logline}</p>
-                </div>
-
-                <div className="section-block">
-                  <h3>角色设定</h3>
-                  <div className="card-grid">
-                    {result.characters.map((character, index) => (
-                      <article key={`${character.name}-${index}`} className="mini-card">
-                        <div className="card-title">{character.name}</div>
-                        <p>{character.description}</p>
-                      </article>
-                    ))}
+          <section className="panel editor-panel">
+            <div className="editor-grid">
+              <div className="editor-main">
+                <div className="field-row">
+                  <div className="field-group wide">
+                    <label className="field-label">项目名称</label>
+                    <input
+                      className="text-input"
+                      value={selectedProject.name}
+                      onChange={(e) => updateCurrentProject("name", e.target.value)}
+                    />
                   </div>
                 </div>
 
-                <div className="section-block">
-                  <h3>分镜编辑</h3>
-                  <div className="storyboard-list">
-                    {result.storyboard.map((shot, index) => (
-                      <div key={`${shot.scene}-${index}`} className="storyboard-item">
-                        <div className="storyboard-head">
-                          <span>{shot.scene}</span>
-                          <span>{shot.camera || "中景"}</span>
-                        </div>
+                <div className="field-row two-col">
+                  <div className="field-group">
+                    <label className="field-label">作品标题</label>
+                    <input
+                      className="text-input"
+                      value={selectedProject.title}
+                      onChange={(e) => updateCurrentProject("title", e.target.value)}
+                    />
+                  </div>
+                  <div className="field-group">
+                    <label className="field-label">题材</label>
+                    <select
+                      className="select-box"
+                      value={selectedProject.genre}
+                      onChange={(e) => updateCurrentProject("genre", e.target.value)}
+                    >
+                      {"奇幻,都市,科幻,悬疑,恋爱,热血".split(",").map((item) => (
+                        <option key={item} value={item}>{item}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
 
-                        <textarea
-                          value={shot.visual}
-                          onChange={(e) => updateStoryboardShot(index, "visual", e.target.value)}
-                          className="shot-textarea"
-                        />
+                <div className="field-row two-col">
+                  <div className="field-group">
+                    <label className="field-label">时长</label>
+                    <select
+                      className="select-box"
+                      value={selectedProject.duration}
+                      onChange={(e) => updateCurrentProject("duration", Number(e.target.value))}
+                    >
+                      {[1, 3, 5, 8, 10, 15].map((value) => (
+                        <option key={value} value={value}>{value} 分钟</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="field-group">
+                    <label className="field-label">分镜数量</label>
+                    <input
+                      type="range"
+                      min={3}
+                      max={8}
+                      step={1}
+                      className="range-input"
+                      value={selectedProject.shotCount}
+                      onChange={(e) => updateCurrentProject("shotCount", Number(e.target.value))}
+                    />
+                    <div className="range-meta">{selectedProject.shotCount} 个分镜</div>
+                  </div>
+                </div>
 
-                        <input
-                          value={shot.dialogue}
-                          onChange={(e) => updateStoryboardShot(index, "dialogue", e.target.value)}
-                          className="text-input"
-                          placeholder="对白/旁白"
-                        />
+                <div className="field-group">
+                  <label className="field-label">故事创意</label>
+                  <textarea
+                    className="idea-textarea"
+                    value={selectedProject.idea}
+                    onChange={(e) => updateCurrentProject("idea", e.target.value)}
+                  />
+                </div>
 
-                        <textarea
-                          value={shot.imagePrompt}
-                          onChange={(e) => updateStoryboardShot(index, "imagePrompt", e.target.value)}
-                          className="shot-textarea small"
-                          placeholder="AI 绘图提示词"
-                        />
+                <div className="action-bar">
+                  <button className="primary-button" onClick={generateProject} disabled={loading || !selectedProject.idea.trim()}>
+                    {loading ? "生成中..." : "生成漫剧方案"}
+                  </button>
+                </div>
+
+                {error && <p className="error-box">{error}</p>}
+              </div>
+
+              <div className="editor-output">
+                <div className="steps">
+                  {workflowSteps.map((step, index) => (
+                    <div key={step} className={`step-pill ${selectedProject.result.title ? "active" : ""}`}>
+                      <span>{String(index + 1).padStart(2, "0")}</span>
+                      {step}
+                    </div>
+                  ))}
+                </div>
+
+                {!selectedProject.result.title && !loading && (
+                  <div className="empty-state">
+                    <div className="empty-icon">✦</div>
+                    <p>填写创意并生成方案后，内容会在这里展示。</p>
+                  </div>
+                )}
+
+                {loading && <div className="loading-state">AI 正在生成完整漫剧方案...</div>}
+
+                {selectedProject.result.title && (
+                  <div className="result-stack">
+                    <div className="result-header">
+                      <p className="result-kicker">项目方案</p>
+                      <h2>{selectedProject.result.title}</h2>
+                      <p className="logline">{selectedProject.result.logline}</p>
+                    </div>
+
+                    <div className="section-block">
+                      <h3>角色设定</h3>
+                      <div className="card-grid">
+                        {selectedProject.result.characters.map((character, index) => (
+                          <article key={`${character.name}-${index}`} className="mini-card">
+                            <div className="card-title">{character.name}</div>
+                            <p>{character.description}</p>
+                          </article>
+                        ))}
                       </div>
-                    ))}
+                    </div>
+
+                    <div className="section-block">
+                      <h3>分镜设计</h3>
+                      <div className="storyboard-list">
+                        {selectedProject.result.storyboard.map((shot, index) => (
+                          <div key={`${shot.scene}-${index}`} className="storyboard-item">
+                            <div className="storyboard-head">
+                              <span>{shot.scene}</span>
+                              <span>{shot.camera || "中景"}</span>
+                            </div>
+
+                            <textarea
+                              value={shot.visual}
+                              onChange={(e) => updateStoryboardShot(index, "visual", e.target.value)}
+                              className="shot-textarea"
+                            />
+
+                            <input
+                              value={shot.dialogue}
+                              onChange={(e) => updateStoryboardShot(index, "dialogue", e.target.value)}
+                              className="text-input"
+                              placeholder="对白/旁白"
+                            />
+
+                            <textarea
+                              value={shot.imagePrompt}
+                              onChange={(e) => updateStoryboardShot(index, "imagePrompt", e.target.value)}
+                              className="shot-textarea small"
+                              placeholder="AI 绘图提示词"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="section-block">
+                      <h3>完整脚本</h3>
+                      <textarea
+                        value={selectedProject.result.script}
+                        onChange={(e) => updateResultField("script", e.target.value)}
+                        className="long-textarea"
+                      />
+                    </div>
+
+                    <div className="section-block">
+                      <h3>配音文案</h3>
+                      <textarea
+                        value={selectedProject.result.voiceover}
+                        onChange={(e) => updateResultField("voiceover", e.target.value)}
+                        className="long-textarea"
+                      />
+                    </div>
+
+                    <div className="section-block">
+                      <h3>视频生成提示词</h3>
+                      <textarea
+                        value={selectedProject.result.videoPrompt}
+                        onChange={(e) => updateResultField("videoPrompt", e.target.value)}
+                        className="long-textarea"
+                      />
+                    </div>
                   </div>
-                </div>
-
-                <div className="section-block">
-                  <h3>完整脚本</h3>
-                  <textarea value={result.script} onChange={(e) => setResult((prev) => ({ ...prev, script: e.target.value }))} className="long-textarea" />
-                </div>
-
-                <div className="section-block">
-                  <h3>配音文案</h3>
-                  <textarea value={result.voiceover} onChange={(e) => setResult((prev) => ({ ...prev, voiceover: e.target.value }))} className="long-textarea" />
-                </div>
-
-                <div className="section-block">
-                  <h3>视频生成提示词</h3>
-                  <textarea value={result.videoPrompt} onChange={(e) => setResult((prev) => ({ ...prev, videoPrompt: e.target.value }))} className="long-textarea" />
-                </div>
+                )}
               </div>
-            )}
+            </div>
           </section>
         </section>
       </div>
