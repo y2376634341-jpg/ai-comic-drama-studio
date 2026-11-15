@@ -22,6 +22,7 @@ type GenerationResult = {
   videoPrompt: string;
 };
 
+type Point = { x: number; y: number };
 type ProjectRecord = {
   id: string;
   name: string;
@@ -31,103 +32,173 @@ type ProjectRecord = {
   duration: number;
   shotCount: number;
   result: GenerationResult;
+  positions: Record<string, Point>;
   createdAt: string;
   updatedAt: string;
 };
-
-type CanvasGesture =
+type Viewport = { x: number; y: number; scale: number };
+type Gesture =
   | { kind: "pan"; pointerX: number; pointerY: number; originX: number; originY: number }
-  | { kind: "node"; index: number; pointerX: number; pointerY: number; originX: number; originY: number }
+  | { kind: "node"; id: string; pointerX: number; pointerY: number; originX: number; originY: number }
   | null;
 
+const STORAGE_KEY = "ai-comic-studio-projects-v2";
 const workflowSteps = ["故事设定", "剧本创作", "分镜设计", "配音文案", "生成提示词"];
-const seedIdea = "失去记忆的少女在废弃都市中醒来，发现自己能听见古老机械的心跳，而一台失落的战争机器正试图带她找到自己真正的过去。";
-const emptyResult: GenerationResult = { title: "", logline: "", characters: [], script: "", storyboard: [], voiceover: "", videoPrompt: "" };
-const defaultNodePosition = (index: number) => ({ x: 80 + (index % 3) * 370, y: 80 + Math.floor(index / 3) * 330 });
+const emptyResult = (): GenerationResult => ({
+  title: "", logline: "", characters: [], script: "", storyboard: [], voiceover: "", videoPrompt: "",
+});
+const initialPositions: Record<string, Point> = {
+  idea: { x: 70, y: 170 },
+  script: { x: 440, y: 170 },
+  export: { x: 1660, y: 170 },
+};
+
+function makeProject(name = "未命名漫剧项目"): ProjectRecord {
+  const now = new Date().toISOString();
+  return {
+    id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    name,
+    title: "新漫剧项目",
+    idea: "",
+    genre: "奇幻",
+    duration: 3,
+    shotCount: 5,
+    result: emptyResult(),
+    positions: { ...initialPositions },
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+const firstProject: ProjectRecord = {
+  id: "local-welcome-project",
+  name: "我的第一个项目",
+  title: "新漫剧项目",
+  idea: "在这里写下你的故事创意。你可以先搭建工作流、添加分镜并编辑内容，不需要配置 AI API。",
+  genre: "奇幻",
+  duration: 3,
+  shotCount: 5,
+  result: emptyResult(),
+  positions: { ...initialPositions },
+  createdAt: "",
+  updatedAt: "",
+};
+
+const nodePosition = (project: ProjectRecord, id: string): Point => {
+  const saved = project.positions?.[id];
+  if (saved) return saved;
+  if (id.startsWith("shot-")) {
+    const index = Number(id.slice(5));
+    return { x: 850 + (index % 2) * 350, y: 145 + Math.floor(index / 2) * 350 };
+  }
+  return initialPositions[id] || { x: 70, y: 170 };
+};
 
 export default function Home() {
-  const [projects, setProjects] = useState<ProjectRecord[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [projects, setProjects] = useState<ProjectRecord[]>([firstProject]);
+  const [selectedId, setSelectedId] = useState(firstProject.id);
+  const [ready, setReady] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [view, setView] = useState({ x: 0, y: 0, scale: 1 });
-  const gesture = useRef<CanvasGesture>(null);
-  const selectedProject = useMemo(() => projects.find((project) => project.id === selectedId) || null, [projects, selectedId]);
+  const [view, setView] = useState<Viewport>({ x: 0, y: 0, scale: 0.82 });
+  const gesture = useRef<Gesture>(null);
 
-  async function loadProjects() {
-    try {
-      const response = await fetch("/api/projects");
-      const data = await response.json();
-      setProjects(Array.isArray(data) ? data : []);
-      if (Array.isArray(data) && data.length) setSelectedId(data[0].id);
-    } catch {
-      setError("无法加载项目列表");
-    }
-  }
+  const selectedProject = useMemo(
+    () => projects.find((project) => project.id === selectedId) || projects[0] || null,
+    [projects, selectedId],
+  );
 
   useEffect(() => {
-    void loadProjects();
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        const parsed: unknown = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length) {
+          const loaded = parsed as ProjectRecord[];
+          setProjects(loaded);
+          setSelectedId(loaded[0].id);
+        }
+      }
+    } catch {
+      // Keep the starter project if local browser storage is unavailable or invalid.
+    }
+    setReady(true);
   }, []);
 
-  async function createProject() {
+  useEffect(() => {
+    if (!ready) return;
     try {
-      const response = await fetch("/api/projects", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: "未命名漫剧项目",
-          title: "新漫剧项目",
-          idea: seedIdea,
-          genre: "奇幻",
-          duration: 3,
-          shotCount: 5,
-          result: emptyResult,
-        }),
-      });
-      const project = await response.json();
-      if (!response.ok) throw new Error(project.error || "创建项目失败");
-      setProjects((previous) => [project, ...previous]);
-      setSelectedId(project.id);
-      setView({ x: 0, y: 0, scale: 1 });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "创建项目失败");
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(projects));
+    } catch {
+      setError("浏览器无法保存本地项目，请检查存储空间或隐私设置。");
     }
+  }, [projects, ready]);
+
+  function updateSelected(updater: (project: ProjectRecord) => ProjectRecord) {
+    if (!selectedProject) return;
+    setProjects((current) => current.map((project) =>
+      project.id === selectedProject.id ? updater({ ...project, updatedAt: new Date().toISOString() }) : project,
+    ));
   }
 
-  async function saveProject() {
-    if (!selectedProject) return;
-    setSaving(true);
+  function createProject() {
+    const project = makeProject();
+    setProjects((current) => [project, ...current]);
+    setSelectedId(project.id);
+    setView({ x: 0, y: 0, scale: 0.82 });
     setError("");
-    try {
-      const response = await fetch(`/api/projects/${selectedProject.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(selectedProject),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "保存失败");
-      setProjects((previous) => previous.map((project) => (project.id === data.id ? data : project)));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "保存失败");
-    } finally {
-      setSaving(false);
-    }
   }
 
-  async function deleteSelected() {
-    if (!selectedProject) return;
-    const response = await fetch(`/api/projects/${selectedProject.id}`, { method: "DELETE" });
-    if (response.ok) {
-      const remaining = projects.filter((project) => project.id !== selectedProject.id);
+  function deleteProject() {
+    if (!selectedProject || !window.confirm(`删除“${selectedProject.name}”？`)) return;
+    const remaining = projects.filter((project) => project.id !== selectedProject.id);
+    if (!remaining.length) {
+      const replacement = makeProject("我的第一个项目");
+      setProjects([replacement]);
+      setSelectedId(replacement.id);
+    } else {
       setProjects(remaining);
-      setSelectedId(remaining[0]?.id || null);
-      setError("");
+      setSelectedId(remaining[0].id);
     }
   }
 
-  async function generateProject() {
+  function addShot() {
     if (!selectedProject) return;
+    const index = selectedProject.result.storyboard.length;
+    const position = { x: 850 + (index % 2) * 350, y: 145 + Math.floor(index / 2) * 350 };
+    updateSelected((project) => ({
+      ...project,
+      result: {
+        ...project.result,
+        storyboard: [...project.result.storyboard, {
+          scene: `新分镜 ${index + 1}`, visual: "", camera: "中景", dialogue: "", imagePrompt: "",
+          canvasX: position.x, canvasY: position.y,
+        }],
+      },
+    }));
+  }
+
+  function updateShot(index: number, field: keyof StoryboardShot, value: string | number) {
+    updateSelected((project) => {
+      const storyboard = [...project.result.storyboard];
+      storyboard[index] = { ...storyboard[index], [field]: value };
+      return { ...project, result: { ...project.result, storyboard } };
+    });
+  }
+
+  function removeShot(index: number) {
+    updateSelected((project) => ({
+      ...project,
+      result: { ...project.result, storyboard: project.result.storyboard.filter((_, itemIndex) => itemIndex !== index) },
+    }));
+  }
+
+  async function generatePlan() {
+    if (!selectedProject) return;
+    if (!selectedProject.idea.trim()) {
+      setError("先在故事创意节点填写内容；你也可以不调用 AI，直接编辑画布节点。");
+      return;
+    }
     setLoading(true);
     setError("");
     try {
@@ -141,108 +212,48 @@ export default function Home() {
           shotCount: selectedProject.shotCount,
         }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "生成失败");
-      const project: ProjectRecord = {
-        ...selectedProject,
-        title: data.title || selectedProject.title,
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || `生成请求失败（${response.status}）`);
+      const storyboard: StoryboardShot[] = Array.isArray(data.storyboard)
+        ? data.storyboard.map((shot: StoryboardShot, index: number) => ({
+            ...shot,
+            scene: shot.scene || `分镜 ${index + 1}`,
+            canvasX: shot.canvasX ?? (850 + (index % 2) * 350),
+            canvasY: shot.canvasY ?? (145 + Math.floor(index / 2) * 350),
+          }))
+        : [];
+      updateSelected((project) => ({
+        ...project,
+        title: data.title || project.title,
         result: {
-          title: data.title || selectedProject.title,
+          title: data.title || project.title,
           logline: data.logline || "",
           characters: Array.isArray(data.characters) ? data.characters : [],
           script: data.script || "",
-          storyboard: Array.isArray(data.storyboard)
-            ? data.storyboard.map((shot: StoryboardShot, index: number) => ({
-                ...shot,
-                scene: shot.scene || `分镜 ${index + 1}`,
-                canvasX: shot.canvasX ?? defaultNodePosition(index).x,
-                canvasY: shot.canvasY ?? defaultNodePosition(index).y,
-              }))
-            : [],
+          storyboard,
           voiceover: data.voiceover || "",
           videoPrompt: data.videoPrompt || "",
         },
-        updatedAt: new Date().toISOString(),
-      };
-      setProjects((previous) => previous.map((item) => (item.id === project.id ? project : item)));
+      }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "生成失败");
+      setError(err instanceof Error ? err.message : "AI 生成失败。画布和本地编辑仍可继续使用。");
     } finally {
       setLoading(false);
     }
   }
 
-  function updateProjectField<K extends keyof ProjectRecord>(key: K, value: ProjectRecord[K]) {
-    if (!selectedProject) return;
-    setProjects((previous) =>
-      previous.map((project) =>
-        project.id === selectedProject.id ? { ...project, [key]: value, updatedAt: new Date().toISOString() } : project,
-      ),
-    );
-  }
-
-  function updateResultField<K extends keyof GenerationResult>(field: K, value: GenerationResult[K]) {
-    if (!selectedProject) return;
-    setProjects((previous) =>
-      previous.map((project) =>
-        project.id === selectedProject.id
-          ? { ...project, result: { ...project.result, [field]: value }, updatedAt: new Date().toISOString() }
-          : project,
-      ),
-    );
-  }
-
-  function updateShot(index: number, field: keyof StoryboardShot, value: string | number) {
-    if (!selectedProject) return;
-    const shots = [...selectedProject.result.storyboard];
-    shots[index] = { ...shots[index], [field]: value };
-    updateResultField("storyboard", shots);
-  }
-
-  function addShot() {
-    if (!selectedProject) return;
-    const index = selectedProject.result.storyboard.length;
-    const position = defaultNodePosition(index);
-    updateResultField("storyboard", [
-      ...selectedProject.result.storyboard,
-      {
-        scene: `新分镜 ${index + 1}`,
-        visual: "",
-        camera: "中景",
-        dialogue: "",
-        imagePrompt: "",
-        canvasX: position.x,
-        canvasY: position.y,
-      },
-    ]);
-  }
-
-  function removeShot(index: number) {
-    if (!selectedProject) return;
-    updateResultField("storyboard", selectedProject.result.storyboard.filter((_, shotIndex) => shotIndex !== index));
-  }
-
   function startPan(event: ReactPointerEvent<HTMLDivElement>) {
-    if ((event.target as HTMLElement).closest(".canvas-node, .canvas-toolbar, button")) return;
+    if ((event.target as HTMLElement).closest(".workflow-node, .canvas-toolbar, button, input, textarea, select")) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     gesture.current = { kind: "pan", pointerX: event.clientX, pointerY: event.clientY, originX: view.x, originY: view.y };
   }
 
-  function startNodeDrag(event: ReactPointerEvent<HTMLDivElement>, index: number) {
+  function startNodeDrag(event: ReactPointerEvent<HTMLDivElement>, id: string) {
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
-    const shot = selectedProject?.result.storyboard[index];
-    if (!shot) return;
-    const position = defaultNodePosition(index);
-    gesture.current = {
-      kind: "node",
-      index,
-      pointerX: event.clientX,
-      pointerY: event.clientY,
-      originX: shot.canvasX ?? position.x,
-      originY: shot.canvasY ?? position.y,
-    };
+    const position = nodePosition(selectedProject!, id);
+    gesture.current = { kind: "node", id, pointerX: event.clientX, pointerY: event.clientY, originX: position.x, originY: position.y };
   }
 
   function moveCanvas(event: ReactPointerEvent<HTMLDivElement>) {
@@ -254,282 +265,144 @@ export default function Home() {
       setView((previous) => ({ ...previous, x: current.originX + dx, y: current.originY + dy }));
       return;
     }
-    if (!selectedProject) return;
-    const shots = selectedProject.result.storyboard.map((shot, index) =>
-      index === current.index
-        ? { ...shot, canvasX: current.originX + dx / view.scale, canvasY: current.originY + dy / view.scale }
-        : shot,
-    );
-    updateResultField("storyboard", shots);
+    updateSelected((project) => ({
+      ...project,
+      positions: { ...project.positions, [current.id]: { x: current.originX + dx / view.scale, y: current.originY + dy / view.scale } },
+      result: current.id.startsWith("shot-")
+        ? {
+            ...project.result,
+            storyboard: project.result.storyboard.map((shot, index) => Number(current.id.slice(5)) === index
+              ? { ...shot, canvasX: current.originX + dx / view.scale, canvasY: current.originY + dy / view.scale }
+              : shot),
+          }
+        : project.result,
+    }));
   }
 
   function zoomCanvas(amount: number) {
-    setView((previous) => ({ ...previous, scale: Math.min(2, Math.max(0.35, previous.scale + amount)) }));
+    setView((previous) => ({ ...previous, scale: Math.min(1.5, Math.max(0.35, previous.scale + amount)) }));
   }
 
-  function exportProject() {
-    if (!selectedProject) return;
-    const blob = new Blob([JSON.stringify(selectedProject, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `${(selectedProject.title || selectedProject.name).replace(/\s+/g, "-")}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
+  function updateField<K extends "name" | "title" | "idea" | "genre" | "duration" | "shotCount">(field: K, value: ProjectRecord[K]) {
+    updateSelected((project) => ({ ...project, [field]: value }));
   }
 
-  if (!selectedProject) {
-    return (
-      <main className="empty-landing">
-        <span className="brand-mark">✦</span>
-        <p className="eyebrow">AI COMIC STUDIO</p>
-        <h1>漫剧工作流平台</h1>
-        <p>创建第一个项目，开始你的 AI 制作流水线。</p>
-        <button className="primary-button" onClick={() => void createProject()}>新建项目</button>
-        {error && <p className="error-box">{error}</p>}
-      </main>
-    );
+  function updateResultField<K extends keyof GenerationResult>(field: K, value: GenerationResult[K]) {
+    updateSelected((project) => ({ ...project, result: { ...project.result, [field]: value } }));
   }
+
+  if (!selectedProject) return null;
+
+  const shots = selectedProject.result.storyboard;
+  const positions = (id: string) => nodePosition(selectedProject, id);
+  const edges = [
+    ["idea", "script"],
+    ...(shots.length ? [["script", "shot-0"]] : [["script", "export"]]),
+    ...shots.slice(0, -1).map((_, index) => [`shot-${index}`, `shot-${index + 1}`]),
+    ...(shots.length ? [[`shot-${shots.length - 1}`, "export"]] : []),
+  ];
 
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div className="brand">
-          <span className="brand-mark">✦</span>
-          <div>
-            <p className="eyebrow">AI COMIC STUDIO</p>
-            <h1>漫剧工作流平台</h1>
-          </div>
-        </div>
+        <div className="brand"><span className="brand-mark">✦</span><div><p className="eyebrow">AI COMIC STUDIO</p><h1>漫剧工作流画布</h1></div></div>
         <div className="header-actions">
-          <button className="secondary-button" onClick={() => void createProject()}>＋ 新项目</button>
-          <button className="secondary-button" onClick={() => void saveProject()} disabled={saving}>{saving ? "保存中…" : "保存"}</button>
-          <button className="secondary-button" onClick={exportProject}>导出 JSON</button>
-          <button className="secondary-button danger" onClick={() => void deleteSelected()}>删除项目</button>
+          <span className="local-badge"><i /> 本地自动保存 · 无需 AI API</span>
+          <button className="secondary-button" onClick={createProject}>＋ 新建项目</button>
+          <button className="secondary-button danger" onClick={deleteProject}>删除项目</button>
         </div>
       </header>
 
       <div className="workspace">
         <aside className="sidebar panel">
-          <div className="sidebar-header">
-            <h2>项目列表</h2>
-            <button className="icon-button" onClick={() => void createProject()} aria-label="新建项目">＋</button>
-          </div>
+          <div className="sidebar-header"><h2>项目列表</h2><button className="icon-button" onClick={createProject} aria-label="新建项目">＋</button></div>
           <div className="project-list">
-            {projects.map((project) => (
-              <button
-                key={project.id}
-                className={`project-item ${selectedProject.id === project.id ? "selected" : ""}`}
-                onClick={() => {
-                  setSelectedId(project.id);
-                  setView({ x: 0, y: 0, scale: 1 });
-                }}
-              >
-                <strong>{project.name || project.title}</strong>
-                <span>{project.updatedAt ? new Date(project.updatedAt).toLocaleDateString() : "新项目"}</span>
-              </button>
-            ))}
+            {projects.map((project) => <button key={project.id} className={`project-item ${project.id === selectedProject.id ? "selected" : ""}`} onClick={() => { setSelectedId(project.id); setError(""); }}>
+              <strong>{project.name || project.title}</strong><span>{project.updatedAt ? project.updatedAt.slice(0, 10) : "本地项目"}</span>
+            </button>)}
           </div>
-          <div className="sidebar-hint">拖动空白处平移画布<br />滚轮缩放，拖动分镜卡片调整位置</div>
+          <div className="sidebar-hint">拖动空白处平移画布<br />滚轮缩放 · 拖动节点调整位置<br />内容自动保存在当前浏览器</div>
         </aside>
 
         <section className="main-column">
           <section className="panel project-settings">
             <div className="section-heading">
-              <div>
-                <p className="eyebrow">PROJECT SETUP</p>
-                <h2>故事设定</h2>
-              </div>
-              <button className="primary-button generate-button" onClick={() => void generateProject()} disabled={loading || !selectedProject.idea.trim()}>
-                {loading ? "生成中…" : "✦ 生成漫剧方案"}
-              </button>
+              <div><p className="eyebrow">PROJECT SETUP</p><h2>故事设定</h2></div>
+              <button className="primary-button generate-button" onClick={() => void generatePlan()} disabled={loading}>{loading ? "生成中…" : "✦ 使用 AI 生成方案（可选）"}</button>
             </div>
             <div className="settings-grid">
-              <label className="field-group">
-                项目名称
-                <input className="text-input" value={selectedProject.name} onChange={(event) => updateProjectField("name", event.target.value)} />
-              </label>
-              <label className="field-group">
-                作品标题
-                <input className="text-input" value={selectedProject.title} onChange={(event) => updateProjectField("title", event.target.value)} />
-              </label>
-              <label className="field-group">
-                题材
-                <select className="select-box" value={selectedProject.genre} onChange={(event) => updateProjectField("genre", event.target.value)}>
-                  {"奇幻,都市,科幻,悬疑,恋爱,热血".split(",").map((genre) => (
-                    <option key={genre} value={genre}>{genre}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="field-group">
-                时长
-                <select className="select-box" value={selectedProject.duration} onChange={(event) => updateProjectField("duration", Number(event.target.value))}>
-                  {[1, 3, 5, 8, 10, 15].map((duration) => (
-                    <option key={duration} value={duration}>{duration} 分钟</option>
-                  ))}
-                </select>
-              </label>
-              <label className="field-group">
-                分镜数量 <span className="range-value">{selectedProject.shotCount}</span>
-                <input type="range" min={3} max={8} value={selectedProject.shotCount} onChange={(event) => updateProjectField("shotCount", Number(event.target.value))} />
-              </label>
-              <label className="field-group idea-field">
-                故事创意
-                <textarea className="text-input idea-textarea" value={selectedProject.idea} onChange={(event) => updateProjectField("idea", event.target.value)} />
-              </label>
+              <label className="field-group">项目名称<input className="text-input" value={selectedProject.name} onChange={(event) => updateField("name", event.target.value)} /></label>
+              <label className="field-group">作品标题<input className="text-input" value={selectedProject.title} onChange={(event) => updateField("title", event.target.value)} /></label>
+              <label className="field-group">题材<select className="select-box" value={selectedProject.genre} onChange={(event) => updateField("genre", event.target.value)}>{"奇幻,都市,科幻,悬疑,恋爱,热血".split(",").map((genre) => <option key={genre}>{genre}</option>)}</select></label>
+              <label className="field-group">时长<select className="select-box" value={selectedProject.duration} onChange={(event) => updateField("duration", Number(event.target.value))}>{[1, 3, 5, 8, 10, 15].map((duration) => <option key={duration} value={duration}>{duration} 分钟</option>)}</select></label>
+              <label className="field-group shot-count-field">分镜数量 <span className="range-value">{selectedProject.shotCount}</span><input type="range" min={3} max={8} value={selectedProject.shotCount} onChange={(event) => updateField("shotCount", Number(event.target.value))} /></label>
             </div>
             {error && <p className="error-box">{error}</p>}
           </section>
 
-          <section className="panel output-panel">
-            <div className="workflow-steps">
-              {workflowSteps.map((step, index) => (
-                <span className={`step-pill ${selectedProject.result.title ? "active" : ""}`} key={step}>
-                  <b>{String(index + 1).padStart(2, "0")}</b>
-                  {step}
-                </span>
-              ))}
+          <section className="panel canvas-panel">
+            <div className="canvas-heading"><div><p className="eyebrow">VISUAL WORKFLOW</p><h2>无限工作流画布</h2><p>先搭建和编辑节点；AI 生成是可选功能。</p></div>
+              <div className="canvas-toolbar"><button className="canvas-action" onClick={addShot}>＋ 添加分镜节点</button><button className="canvas-action" onClick={() => zoomCanvas(-0.12)} aria-label="缩小">−</button><span className="zoom-label">{Math.round(view.scale * 100)}%</span><button className="canvas-action" onClick={() => zoomCanvas(0.12)} aria-label="放大">＋</button><button className="canvas-action" onClick={() => setView({ x: 0, y: 0, scale: 0.82 })}>重置视图</button></div>
             </div>
-
-            {!selectedProject.result.title && !loading && (
-              <div className="empty-state">
-                <span>✦</span>
-                <h2>准备好开始创作了吗？</h2>
-                <p>填写故事创意并生成方案，分镜将出现在无限画布上。</p>
+            <div className="workflow-legend"><span><i className="legend-dot idea-dot" />输入节点</span><span><i className="legend-dot process-dot" />创作节点</span><span><i className="legend-dot output-dot" />输出节点</span><span className="legend-help">拖拽节点和画布，滚轮缩放</span></div>
+            <div className="canvas-viewport" onPointerDown={startPan} onPointerMove={moveCanvas} onPointerUp={() => { gesture.current = null; }} onPointerCancel={() => { gesture.current = null; }} onWheel={(event) => { event.preventDefault(); zoomCanvas(event.deltaY < 0 ? 0.06 : -0.06); }}>
+              <div className="canvas-world" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }}>
+                <svg className="connection-layer" width="5000" height="3000" aria-hidden="true">
+                  <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#8b7ba9" /></marker></defs>
+                  {edges.map(([from, to], index) => {
+                    const a = positions(from); const b = positions(to);
+                    return <path key={`${from}-${to}-${index}`} d={`M ${a.x + 300} ${a.y + 120} C ${a.x + 390} ${a.y + 120}, ${b.x - 90} ${b.y + 120}, ${b.x} ${b.y + 120}`} fill="none" stroke="#716184" strokeWidth="2" markerEnd="url(#arrow)" />;
+                  })}
+                </svg>
+                <article className="workflow-node idea-node" style={{ left: positions("idea").x, top: positions("idea").y }}>
+                  <div className="node-header" onPointerDown={(event) => startNodeDrag(event, "idea")}><span className="node-type-icon">✎</span><div><small>INPUT · STORY</small><strong>故事创意</strong></div><span className="node-status">●</span></div>
+                  <label className="node-field">创意描述<textarea value={selectedProject.idea} onChange={(event) => updateField("idea", event.target.value)} placeholder="写下故事灵感、角色或场景…" /></label>
+                  <div className="node-footer"><span>输入节点</span><span className="socket socket-out" /></div>
+                </article>
+                <article className="workflow-node script-node" style={{ left: positions("script").x, top: positions("script").y }}>
+                  <div className="node-header" onPointerDown={(event) => startNodeDrag(event, "script")}><span className="node-type-icon">▤</span><div><small>WORKFLOW · SCRIPT</small><strong>剧本创作</strong></div><span className="node-status">编辑</span></div>
+                  <label className="node-field">剧本内容<textarea value={selectedProject.result.script} onChange={(event) => updateResultField("script", event.target.value)} placeholder="直接在这里写剧本；也可以点击上方按钮尝试 AI 生成。" /></label>
+                  <div className="node-footer"><span>可手动编辑 · 无需 API</span><span className="socket socket-in" /><span className="socket socket-out" /></div>
+                </article>
+                {shots.map((shot, index) => {
+                  const id = `shot-${index}`;
+                  const point = shot.canvasX !== undefined && !selectedProject.positions?.[id]
+                    ? { x: shot.canvasX, y: shot.canvasY ?? 145 }
+                    : positions(id);
+                  return <article className="workflow-node shot-node" key={`${shot.scene}-${index}`} style={{ left: point.x, top: point.y }}>
+                    <div className="node-header" onPointerDown={(event) => startNodeDrag(event, id)}><span className="node-type-icon">▧</span><div><small>WORKFLOW · SHOT {String(index + 1).padStart(2, "0")}</small><strong>分镜画面</strong></div><button className="node-delete" onClick={() => removeShot(index)} aria-label="删除分镜">×</button></div>
+                    <label className="node-field">镜头名称<input value={shot.scene} onChange={(event) => updateShot(index, "scene", event.target.value)} /></label>
+                    <label className="node-field">画面描述<textarea value={shot.visual} onChange={(event) => updateShot(index, "visual", event.target.value)} placeholder="描述这一镜的画面…" /></label>
+                    <div className="node-row"><label className="node-field">景别<input value={shot.camera} onChange={(event) => updateShot(index, "camera", event.target.value)} /></label><label className="node-field">对白<input value={shot.dialogue} onChange={(event) => updateShot(index, "dialogue", event.target.value)} placeholder="对白 / 旁白" /></label></div>
+                    <label className="node-field">绘图提示词<textarea value={shot.imagePrompt} onChange={(event) => updateShot(index, "imagePrompt", event.target.value)} placeholder="可手动填写提示词…" /></label>
+                    <div className="node-footer"><span>分镜节点</span><span className="socket socket-in" /><span className="socket socket-out" /></div>
+                  </article>;
+                })}
+                <article className="workflow-node export-node" style={{ left: positions("export").x, top: positions("export").y }}>
+                  <div className="node-header" onPointerDown={(event) => startNodeDrag(event, "export")}><span className="node-type-icon">⇩</span><div><small>OUTPUT</small><strong>项目结果</strong></div><span className="node-status">本地</span></div>
+                  <label className="node-field">配音文案<textarea value={selectedProject.result.voiceover} onChange={(event) => updateResultField("voiceover", event.target.value)} placeholder="在此整理配音文案…" /></label>
+                  <label className="node-field">视频提示词<textarea value={selectedProject.result.videoPrompt} onChange={(event) => updateResultField("videoPrompt", event.target.value)} placeholder="在此整理视频风格和镜头提示词…" /></label>
+                  <button className="export-button" onClick={() => { const blob = new Blob([JSON.stringify(selectedProject, null, 2)], { type: "application/json" }); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `${selectedProject.title || selectedProject.name}.json`; link.click(); URL.revokeObjectURL(url); }}>导出项目 JSON</button>
+                  <div className="node-footer"><span>输出节点 · 本地导出</span><span className="socket socket-in" /></div>
+                </article>
+                {!shots.length && <div className="canvas-empty-note" style={{ left: 850, top: 560 }}>点击“添加分镜节点”开始搭建你的工作流</div>}
               </div>
-            )}
+            </div>
+          </section>
 
-            {loading && (
-              <div className="empty-state">
-                <span className="spinner">✦</span>
-                <p>AI 正在生成完整漫剧方案…</p>
-              </div>
-            )}
-
-            {selectedProject.result.title && (
-              <div className="result-content">
-                <div className="result-header">
-                  <div>
-                    <p className="eyebrow">PROJECT STORY</p>
-                    <h2>{selectedProject.result.title}</h2>
-                    <p>{selectedProject.result.logline}</p>
-                  </div>
-                </div>
-
-                <section className="section-block">
-                  <div className="section-heading">
-                    <div>
-                      <p className="eyebrow">STORYBOARD</p>
-                      <h3>分镜无限画布</h3>
-                    </div>
-                    <span className="canvas-help">拖拽空白区域平移 · 滚轮缩放 · 拖动卡片移动</span>
-                  </div>
-
-                  <div className="canvas-toolbar">
-                    <button className="canvas-action" onClick={addShot}>＋ 添加分镜</button>
-                    <span className="toolbar-spacer" />
-                    <button className="canvas-action" onClick={() => zoomCanvas(-0.15)} aria-label="缩小">−</button>
-                    <span className="zoom-label">{Math.round(view.scale * 100)}%</span>
-                    <button className="canvas-action" onClick={() => zoomCanvas(0.15)} aria-label="放大">＋</button>
-                    <button className="canvas-action" onClick={() => setView({ x: 0, y: 0, scale: 1 })}>重置视图</button>
-                  </div>
-
-                  <div
-                    className="canvas-viewport"
-                    onPointerDown={startPan}
-                    onPointerMove={moveCanvas}
-                    onPointerUp={() => {
-                      gesture.current = null;
-                    }}
-                    onPointerCancel={() => {
-                      gesture.current = null;
-                    }}
-                    onWheel={(event) => {
-                      event.preventDefault();
-                      zoomCanvas(event.deltaY < 0 ? 0.08 : -0.08);
-                    }}
-                  >
-                    <div className="canvas-world" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }}>
-                      {selectedProject.result.storyboard.map((shot, index) => {
-                        const fallback = defaultNodePosition(index);
-                        return (
-                          <article
-                            className="canvas-node"
-                            key={`${shot.scene}-${index}`}
-                            style={{ left: shot.canvasX ?? fallback.x, top: shot.canvasY ?? fallback.y }}
-                          >
-                            <div className="node-header" onPointerDown={(event) => startNodeDrag(event, index)}>
-                              <span className="node-grip">⠿</span>
-                              <input
-                                aria-label="分镜名称"
-                                value={shot.scene}
-                                onChange={(event) => updateShot(index, "scene", event.target.value)}
-                                onPointerDown={(event) => event.stopPropagation()}
-                              />
-                              <button className="node-delete" onClick={() => removeShot(index)} aria-label="删除分镜">×</button>
-                            </div>
-                            <label className="node-field">
-                              画面描述
-                              <textarea value={shot.visual} onChange={(event) => updateShot(index, "visual", event.target.value)} placeholder="描述这一镜的画面…" />
-                            </label>
-                            <div className="node-row">
-                              <label className="node-field">
-                                景别
-                                <input value={shot.camera || "中景"} onChange={(event) => updateShot(index, "camera", event.target.value)} />
-                              </label>
-                              <label className="node-field">
-                                白
-                                <input value={shot.dialogue} onChange={(event) => updateShot(index, "dialogue", event.target.value)} placeholder="对白 / 旁白" />
-                              </label>
-                            </div>
-                            <label className="node-field">
-                              AI 绘图提示词
-                              <textarea className="prompt-input" value={shot.imagePrompt} onChange={(event) => updateShot(index, "imagePrompt", event.target.value)} placeholder="绘图提示词…" />
-                            </label>
-                          </article>
-                        );
-                      })}
-                      {!selectedProject.result.storyboard.length && <div className="canvas-empty-note">还没有分镜，点击“添加分镜”开始构建画面。</div>}
-                    </div>
-                  </div>
-                </section>
-
-                <div className="below-grid">
-                  <section className="section-block">
-                    <p className="eyebrow">CHARACTERS</p>
-                    <h3>角色设定</h3>
-                    <div className="character-grid">
-                      {selectedProject.result.characters.map((character, index) => (
-                        <article className="mini-card" key={`${character.name}-${index}`}>
-                          <strong>{character.name}</strong>
-                          <p>{character.description}</p>
-                        </article>
-                      ))}
-                    </div>
-                  </section>
-
-                  <section className="section-block">
-                    <p className="eyebrow">SCRIPT</p>
-                    <h3>完整脚本</h3>
-                    <textarea className="long-textarea" value={selectedProject.result.script} onChange={(event) => updateResultField("script", event.target.value)} />
-                  </section>
-
-                  <section className="section-block">
-                    <p className="eyebrow">VOICEOVER</p>
-                    <h3>配音文案</h3>
-                    <textarea className="long-textarea" value={selectedProject.result.voiceover} onChange={(event) => updateResultField("voiceover", event.target.value)} />
-                  </section>
-
-                  <section className="section-block">
-                    <p className="eyebrow">VIDEO PROMPT</p>
-                    <h3>视频生成提示词</h3>
-                    <textarea className="long-textarea" value={selectedProject.result.videoPrompt} onChange={(event) => updateResultField("videoPrompt", event.target.value)} />
-                  </section>
-                </div>
-              </div>
-            )}
+          <section className="panel lower-panel">
+            <div className="workflow-steps">{workflowSteps.map((step, index) => <span className={`step-pill ${index === 0 || shots.length ? "active" : ""}`} key={step}><b>{String(index + 1).padStart(2, "0")}</b>{step}</span>)}</div>
+            <div className="lower-grid"><label className="field-group">一句话故事简介<textarea className="text-input lower-textarea" value={selectedProject.result.logline} onChange={(event) => updateResultField("logline", event.target.value)} placeholder="可以手动整理故事简介" /></label><div className="local-note"><strong>画布可独立使用</strong><p>创建项目、编辑剧本与分镜、拖动缩放画布、导出 JSON 都在本地完成。AI 生成需要另行配置兼容接口和 API Key。</p></div></div>
           </section>
         </section>
+
+        <aside className="guide-panel panel">
+          <p className="eyebrow">WORKFLOW GUIDE</p><h2>今天一起创作点什么？</h2><p className="guide-copy">把灵感拆成可编辑节点，按自己的节奏整理创作流程。</p>
+          <button className="guide-action" onClick={() => { document.querySelector<HTMLTextAreaElement>(".idea-node textarea")?.focus(); }}><span>✧</span><div><strong>描述故事创意</strong><small>从想法开始，直接在画布里编辑</small></div></button>
+          <button className="guide-action" onClick={addShot}><span>▧</span><div><strong>添加分镜节点</strong><small>每个镜头都可以独立编辑和移动</small></div></button>
+          <button className="guide-action" onClick={() => void generatePlan()} disabled={loading}><span>✦</span><div><strong>尝试 AI 生成方案</strong><small>可选功能，需要先配置服务端 API</small></div></button>
+          <div className="guide-tip"><strong>无需 API 即可使用</strong><p>节点内容自动保存在此浏览器。AI API 仅用于自动生成，不影响画布、手动编辑和项目导出。</p></div>
+        </aside>
       </div>
     </main>
   );
