@@ -1,0 +1,9 @@
+/* Local image/video import controls and canvas previews */
+.media-file-input { display: none; }
+.media-preview { display: block; width: 100%; max-height: 260px; margin: 0 0 10px; border: 1px solid rgba(255,255,255,.08); border-radius: 9px; background: #070a10; object-fit: contain; }
+.media-node .node-header strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.media-missing { display: grid; place-items: center; min-height: 100px; margin-bottom: 10px; border: 1px dashed rgba(255,255,255,.16); border-radius: 9px; color: #aab3c5; font-size: 11px; }
+.canvas-panel:fullscreen { display: flex; flex-direction: column; width: 100vw; height: 100vh; max-width: none; padding: 16px; border: 0; border-radius: 0; background: #0b0e17; }
+.canvas-panel:fullscreen .canvas-heading, .canvas-panel:fullscreen .workflow-legend { flex: none; }
+.canvas-panel:fullscreen .canvas-viewport { flex: 1; height: auto; min-height: 0; }
+@media (max-width: 520px) { .canvas-panel:fullscreen { padding: 8px; } .canvas-panel:fullscreen .canvas-toolbar { width: auto; } }
