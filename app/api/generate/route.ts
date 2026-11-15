@@ -2,11 +2,12 @@ import OpenAI from "openai";
 
 export const runtime = "nodejs";
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
 export async function POST(request: Request) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    return Response.json({ error: "服务端尚未配置 OpenAI API Key。" }, { status: 503 });
+  }
+
   try {
     const body = await request.json();
     const { idea, genre, duration } = body;
@@ -15,6 +16,7 @@ export async function POST(request: Request) {
       return Response.json({ error: "请先填写故事创意。" }, { status: 400 });
     }
 
+    const openai = new OpenAI({ apiKey });
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       response_format: { type: "json_object" },
@@ -67,7 +69,7 @@ export async function POST(request: Request) {
     console.error("生成失败:", error);
     return Response.json(
       { error: "生成失败，请检查 OpenAI API 配置或稍后再试。" },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
