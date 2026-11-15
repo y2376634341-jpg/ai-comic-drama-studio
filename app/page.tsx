@@ -204,10 +204,15 @@ export default function Home() {
     if (!current) return;
     const dx = event.clientX - current.pointerX;
     const dy = event.clientY - current.pointerY;
-    if (current.kind === "pan") setView((previous) => ({ ...previous, x: current.originX + dx, y: current.originY + dy }));
-    else {
-      updateShot(current.index, "canvasX", current.originX + dx / view.scale);
-      updateShot(current.index, "canvasY", current.originY + dy / view.scale);
+    if (current.kind === "pan") {
+      setView((previous) => ({ ...previous, x: current.originX + dx, y: current.originY + dy }));
+    } else if (selectedProject) {
+      // Update both coordinates in one storyboard snapshot. Separate updates can
+      // race with React state and cause the second coordinate to overwrite the first.
+      const shots = selectedProject.result.storyboard.map((shot, index) => index === current.index
+        ? { ...shot, canvasX: current.originX + dx / view.scale, canvasY: current.originY + dy / view.scale }
+        : shot);
+      updateResultField("storyboard", shots);
     }
   }
 
